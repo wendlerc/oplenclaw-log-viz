@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timeline — MD Edits + Sentiment</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #141922;
+      --border: #1e2530;
+      --muted: #6b7a8f;
+      --text: #e4e8ef;
+      --accent: #5eb9ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    .subtitle a { color: var(--accent); }
+    .section-label { font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; text-transform: uppercase; }
+    .filters { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; align-items: flex-start; }
+    .filter-group { padding: 0.75rem; background: var(--surface); border-radius: 8px; border: 1px solid var(--border); }
+    .filter-group label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; cursor: pointer; margin-right: 0.5rem; }
+    .filter-group label input { accent-color: var(--accent); }
+    .controls { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .controls button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--accent); padding: 0.4rem 0.8rem; font-size: 0.85rem; cursor: pointer; }
+    .controls button:hover { background: var(--border); }
+    .loading { text-align: center; padding: 4rem; color: var(--muted); }
+    #chart { width: 100%; min-height: 600px; }
+    .tooltip { position: absolute; visibility: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; max-width: 400px; max-height: 300px; overflow-y: auto; font-size: 0.85rem; z-index: 1000; pointer-events: none; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Timeline — MD Edits + Sentiment</h1>
+    <p class="subtitle">Shared time axis. Brush to zoom. <a href="/md-edits-view.html">MD only</a> · <a href="/user-sentiment-view.html">Sentiment only</a> · <a href="/god-file-view.html">God file</a></p>
+    <div class="filters">
+      <div class="filter-group">
+        <span class="section-label">MD files</span><br>
+        <span id="file-filter"></span>
+      </div>
+      <div class="filter-group">
+        <span class="section-label">Sentiment</span><br>
+        <span id="sentiment-filter"></span>
+      </div>
+    </div>
+    <div class="controls">
+      <button type="button" id="btn-reset">Reset time window</button>
+      <span id="range-label" style="color: var(--muted); font-size: 0.85rem;"></span>
+    </div>
+    <div id="chart"></div>
+  </div>
+  <div class="tooltip" id="tooltip"></div>
+  <script>
+    const SENTIMENT_ORDER = ["very_delighted", "delighted", "neutral", "upset", "very_upset"];
+    const SENTIMENT_LABELS = { very_delighted: "Very delighted", delighted: "Delighted", neutral: "Neutral", upset: "Upset", very_upset: "Very upset" };
+    const SENTIMENT_COLORS = { very_delighted: "#22c55e", delighted: "#4ade80", neutral: "#6b7a8f", upset: "#f97316", very_upset: "#ef4444" };
+    const COLOR_PALETTE = ["#5eb9ff", "#a78bfa", "#34d399", "#f59e0b", "#f472b6", "#22c55e", "#06b6d4", "#ec4899", "#8b5cf6"];
+    const ROWS_PER = 8;
+    const DOT_PADDING = 4;
+    const CHART_HEIGHT = 220;
+    const BRUSH_HEIGHT = 28;
+
+    let allEdits = [], allMessages = [], allFiles = [], allEvents = [];
+    let selectedFiles = new Set(), selectedSentiments = new Set(SENTIMENT_ORDER);
+    let timeDomain = null;
+
+    function assignSubRows(items, xScale, sizeScale, groupKey) {
+      const byGroup = d3.group(items, d => d[groupKey]);
+      const result = [];
+      for (const [, dots] of byGroup) {
+        const sorted = [...dots].sort((a, b) => a.time - b.time);
+        const rowOccupants = Array.from({ length: ROWS_PER }, () => []);
+        for (const d of sorted) {
+          const x = xScale(d.time);
+          const r = sizeScale(d.sizeVal);
+          let row = 0;
+          for (; row < ROWS_PER; row++) {
+            if (!rowOccupants[row].some(o => Math.abs(x - o.x) < r + o.r + DOT_PADDING)) break;
+          }
+          row = Math.min(row, ROWS_PER - 1);
+          rowOccupants[row].push({ x, r });
+          result.push({ ...d, subRow: row, laneId: `${d[groupKey]}::${row}` });
+        }
+      }
+      return result;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s ?? "";
+      return div.innerHTML;
+    }
+
+    async function loadData() {
+      document.getElementById("chart").innerHTML = '<div class="loading">Loading…</div>';
+      const res = await fetch("/events-slim.json");
+      const data = await res.json();
+      const events = data.events || [];
+      allEvents = events.map(e => ({ ...e, time: new Date(e.time) }));
+
+      const mdWrites = events.map((e, i) => ({ ...e, _index: i })).filter(e => e.type === "md_write" && e.category);
+      allEdits = mdWrites.map(e => ({
+        ...e,
+        time: new Date(e.time),
+        bytes: e.bytes ?? (e.message ? e.message.length : 0),
+        sizeVal: e.bytes ?? (e.message ? e.message.length : 0),
+        groupKey: "category",
+      })).sort((a, b) => a.time - b.time);
+
+      const userMsgs = events
+        .map((e, i) => ({ ...e, _index: i }))
+        .filter(e => e.type === "user_message" && e.message?.trim())
+        .map(e => ({
+          ...e,
+          time: new Date(e.time),
+          sentiment: e.sentiment || "neutral",
+          msgLen: (e.message || "").length,
+          sizeVal: (e.message || "").length,
+          groupKey: "sentiment",
+        }))
+        .sort((a, b) => a.time - b.time);
+
+      allMessages = userMsgs;
+      allFiles = [...new Set(allEdits.map(e => e.category))].sort();
+      const defaultFiles = ["SOUL.md", "USER.md", "AGENTS.md", "MEMORY.md", "IDENTITY.md"];
+      selectedFiles = new Set(allFiles.filter(f => defaultFiles.includes(f)));
+      if (selectedFiles.size === 0) selectedFiles = new Set(allFiles);
+      selectedSentiments = new Set(SENTIMENT_ORDER);
+
+      const allTimes = [
+        ...allEdits.map(e => e.time),
+        ...allMessages.map(m => m.time),
+      ].filter(Boolean);
+      if (allTimes.length === 0) {
+        document.getElementById("chart").innerHTML = '<div class="loading">No events found.</div>';
+        return;
+      }
+      timeDomain = [d3.min(allTimes), d3.max(allTimes)];
+      buildFilters();
+      render();
+    }
+
+    function buildFilters() {
+      const fileEl = document.getElementById("file-filter");
+      fileEl.innerHTML = "";
+      for (const f of allFiles) {
+        const count = allEdits.filter(e => e.category === f).length;
+        const i = allFiles.indexOf(f);
+        const label = document.createElement("label");
+        label.innerHTML = `<input type="checkbox" data-file="${escapeHtml(f)}" ${selectedFiles.has(f) ? "checked" : ""}> <span style="color:${COLOR_PALETTE[i % COLOR_PALETTE.length]}">●</span> ${escapeHtml(f)} (${count})`;
+        label.querySelector("input").onchange = (ev) => {
+          if (ev.target.checked) selectedFiles.add(f);
+          else selectedFiles.delete(f);
+          render();
+        };
+        fileEl.appendChild(label);
+      }
+
+      const sentEl = document.getElementById("sentiment-filter");
+      sentEl.innerHTML = "";
+      for (const s of SENTIMENT_ORDER) {
+        const count = allMessages.filter(m => (m.sentiment || "neutral") === s).length;
+        const label = document.createElement("label");
+        label.innerHTML = `<input type="checkbox" data-sentiment="${s}" ${selectedSentiments.has(s) ? "checked" : ""}> <span style="color:${SENTIMENT_COLORS[s]}">●</span> ${SENTIMENT_LABELS[s]} (${count})`;
+        label.querySelector("input").onchange = (ev) => {
+          if (ev.target.checked) selectedSentiments.add(s);
+          else selectedSentiments.delete(s);
+          render();
+        };
+        sentEl.appendChild(label);
+      }
+    }
+
+    function render() {
+      const chartEl = document.getElementById("chart");
+      chartEl.innerHTML = "";
+      const width = Math.max(800, chartEl.clientWidth || 800);
+      const margin = { top: 8, right: 20, bottom: 24, left: 140 };
+      const innerWidth = width - margin.left - margin.right;
+      const [start, end] = timeDomain;
+      const xScale = d3.scaleTime().domain([start, end]).range([0, innerWidth]);
+
+      const tooltip = document.getElementById("tooltip");
+
+      // MD edits section
+      const editsFiltered = allEdits.filter(e => selectedFiles.has(e.category) && e.time >= start && e.time <= end);
+      const editsExtent = d3.extent(editsFiltered, d => d.bytes) || [0, 1000];
+      const editsSizeScale = d3.scaleSqrt().domain(editsExtent).range([4, 18]);
+      const editsWithRows = assignSubRows(editsFiltered, xScale, editsSizeScale, "category");
+      const editLanes = [...selectedFiles].sort().flatMap(f => Array.from({ length: ROWS_PER }, (_, i) => `${f}::${i}`));
+      const editYScale = d3.scaleBand().domain(editLanes).range([0, CHART_HEIGHT]).padding(0.05);
+
+      const svg = d3.select(chartEl).append("svg").attr("width", width).attr("height", CHART_HEIGHT + CHART_HEIGHT + BRUSH_HEIGHT + 60).attr("viewBox", `0 0 ${width} ${CHART_HEIGHT + CHART_HEIGHT + BRUSH_HEIGHT + 60}`);
+
+      const gEdits = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+      gEdits.append("text").attr("x", -margin.left + 8).attr("y", -4).attr("fill", "#6b7a8f").style("font-size", "10px").text("MD edits");
+      gEdits.append("g").attr("transform", `translate(0,${CHART_HEIGHT})`).call(d3.axisBottom(xScale).ticks(6).tickFormat(d3.timeFormat("%b %d %H:%M"))).selectAll("text").attr("fill", "#6b7a8f").style("font-size", "9px");
+      gEdits.append("g").call(d3.axisLeft(editYScale).tickSize(0)).selectAll("text").attr("fill", "#6b7a8f").style("font-size", "9px").text(d => d.split("::")[1] === "0" ? d.split("::")[0] : "");
+      const editDots = gEdits.selectAll("circle").data(editsWithRows).join("circle")
+        .attr("cx", d => xScale(d.time))
+        .attr("cy", d => editYScale(d.laneId) + editYScale.bandwidth() / 2)
+        .attr("r", d => editsSizeScale(d.bytes))
+        .attr("fill", d => COLOR_PALETTE[allFiles.indexOf(d.category) % COLOR_PALETTE.length])
+        .attr("fill-opacity", 0.85)
+        .attr("stroke", "#0d0f14")
+        .attr("stroke-width", 1)
+        .style("cursor", "pointer");
+      editDots.on("mouseenter", (ev, d) => {
+        tooltip.innerHTML = `<div style="font-weight:600;color:${COLOR_PALETTE[allFiles.indexOf(d.category) % COLOR_PALETTE.length]}">${d.category}</div><div style="font-size:11px;color:#6b7a8f">${d3.timeFormat("%b %d %H:%M:%S")(d.time)}</div><div>${(d.modSummary || d.message || "").slice(0, 150)}…</div>`;
+        tooltip.style.visibility = "visible";
+      }).on("mousemove", (ev) => { tooltip.style.top = (ev.pageY + 12) + "px"; tooltip.style.left = Math.min(ev.pageX + 12, window.innerWidth - 420) + "px"; }).on("mouseleave", () => { tooltip.style.visibility = "hidden"; })
+        .on("click", (ev, d) => { ev.stopPropagation(); if (d._index != null) window.open(`/god-file-view.html#e-${d._index}`, "_blank"); });
+
+      // Sentiment section
+      const msgsFiltered = allMessages.filter(m => selectedSentiments.has(m.sentiment) && m.time >= start && m.time <= end);
+      const msgsExtent = d3.extent(msgsFiltered, d => d.msgLen) || [0, 500];
+      const msgsSizeScale = d3.scaleSqrt().domain(msgsExtent).range([4, 18]);
+      const msgsWithRows = assignSubRows(msgsFiltered, xScale, msgsSizeScale, "sentiment");
+      const sentLanes = [...selectedSentiments].sort((a, b) => SENTIMENT_ORDER.indexOf(a) - SENTIMENT_ORDER.indexOf(b))
+        .flatMap(s => Array.from({ length: ROWS_PER }, (_, i) => `${s}::${i}`));
+      const sentYScale = d3.scaleBand().domain(sentLanes).range([0, CHART_HEIGHT]).padding(0.05);
+
+      const gSent = svg.append("g").attr("transform", `translate(${margin.left},${CHART_HEIGHT + 36})`);
+      gSent.append("text").attr("x", -margin.left + 8).attr("y", -4).attr("fill", "#6b7a8f").style("font-size", "10px").text("Sentiment");
+      gSent.append("g").attr("transform", `translate(0,${CHART_HEIGHT})`).call(d3.axisBottom(xScale).ticks(6).tickFormat(d3.timeFormat("%b %d %H:%M"))).selectAll("text").attr("fill", "#6b7a8f").style("font-size", "9px");
+      gSent.append("g").call(d3.axisLeft(sentYScale).tickSize(0)).selectAll("text").attr("fill", "#6b7a8f").style("font-size", "9px").text(d => d.split("::")[1] === "0" ? SENTIMENT_LABELS[d.split("::")[0]] : "");
+      const sentDots = gSent.selectAll("circle").data(msgsWithRows).join("circle")
+        .attr("cx", d => xScale(d.time))
+        .attr("cy", d => sentYScale(d.laneId) + sentYScale.bandwidth() / 2)
+        .attr("r", d => msgsSizeScale(d.msgLen))
+        .attr("fill", d => SENTIMENT_COLORS[d.sentiment] ?? "#6b7a8f")
+        .attr("fill-opacity", 0.85)
+        .attr("stroke", "#0d0f14")
+        .attr("stroke-width", 1)
+        .style("cursor", "pointer");
+      sentDots.on("mouseenter", (ev, d) => {
+        const userLabel = d.userName ? `<div style="font-size:11px;color:#a78bfa;margin-bottom:4px">@${escapeHtml(d.userName)}</div>` : "";
+        tooltip.innerHTML = `${userLabel}<div style="font-weight:600;color:${SENTIMENT_COLORS[d.sentiment]}">${SENTIMENT_LABELS[d.sentiment]}</div><div style="font-size:11px;color:#6b7a8f">${d3.timeFormat("%b %d %H:%M:%S")(d.time)}</div><div>${escapeHtml((d.message || "").slice(0, 150))}…</div><div style="font-size:10px;color:#6b7a8f;margin-top:4px">Click → god file</div>`;
+        tooltip.style.visibility = "visible";
+      }).on("mousemove", (ev) => { tooltip.style.top = (ev.pageY + 12) + "px"; tooltip.style.left = Math.min(ev.pageX + 12, window.innerWidth - 420) + "px"; }).on("mouseleave", () => { tooltip.style.visibility = "hidden"; })
+        .on("click", (ev, d) => { ev.stopPropagation(); if (d._index != null) window.open(`/god-file-view.html#e-${d._index}`, "_blank"); });
+
+      // Brush (shared)
+      const fullExtent = [d3.min([...allEdits, ...allMessages].map(x => x.time)), d3.max([...allEdits, ...allMessages].map(x => x.time))];
+      const brushXScale = d3.scaleTime().domain(fullExtent).range([0, innerWidth]);
+      const brushG = svg.append("g").attr("transform", `translate(${margin.left},${CHART_HEIGHT + CHART_HEIGHT + 52})`);
+      let skipBrushEnd = false;
+      const brush = d3.brushX().extent([[0, 0], [innerWidth, BRUSH_HEIGHT]]).on("end", (ev) => {
+        if (skipBrushEnd) { skipBrushEnd = false; return; }
+        const sel = ev.selection;
+        if (sel) {
+          timeDomain = [brushXScale.invert(sel[0]), brushXScale.invert(sel[1])];
+          render();
+        }
+      });
+      brushG.call(brush);
+      skipBrushEnd = true;
+      brushG.call(brush.move, [brushXScale(start), brushXScale(end)]);
+      brushG.selectAll(".selection").attr("stroke", "rgba(94,185,255,0.4)").attr("fill", "rgba(94,185,255,0.15)");
+
+      document.getElementById("range-label").textContent =
+        `${d3.timeFormat("%b %d")(start)} – ${d3.timeFormat("%b %d")(end)} (${editsFiltered.length} edits, ${msgsFiltered.length} msgs)`;
+    }
+
+    document.getElementById("btn-reset").addEventListener("click", () => {
+      const allTimes = [...allEdits.map(e => e.time), ...allMessages.map(m => m.time)].filter(Boolean);
+      if (allTimes.length) {
+        timeDomain = [d3.min(allTimes), d3.max(allTimes)];
+        render();
+      }
+    });
+
+    loadData().catch(e => {
+      document.getElementById("chart").innerHTML = `<div class="loading">${escapeHtml(e.message)}</div>`;
+    });
+  </script>
+</body>
+</html>

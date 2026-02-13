@@ -1,6 +1,6 @@
 # OpenClaw Log Viz
 
-Visualize OpenClaw/moltbot logs: MD file edits with diff-based summaries.
+Visualize OpenClaw/moltbot logs: MD file edits, user sentiment, and a unified log god file.
 
 ## Quick Start
 
@@ -15,25 +15,77 @@ npm install
 #    - Or copy from OpenClaw: npm run copy-logs
 #    - Or generate samples: npm run sample
 
-# 3. Parse, summarize, slim
+# 3. Parse, summarize, annotate, slim
 npm run parse
 npm run summarize:mods   # requires OPENROUTER_API_KEY
+npm run annotate:sentiment   # requires OPENROUTER_API_KEY (optional, for sentiment viz)
 npm run slim
 
 # 4. Run
 npm run dev
-# Open http://localhost:5173 (redirects to MD edits view)
+# Open http://localhost:5173
 ```
 
 ## Pipeline Overview
 
 | Step | Command | Output | Notes |
 |------|---------|--------|------|
-| Parse | `npm run parse` | `public/events.json` | Extracts events from logs. **Writes only** (no reads). |
+| Parse | `npm run parse` | `public/events.json` | Extracts events from logs. Preserves existing sentiment when re-parsing. |
 | Summarize mods | `npm run summarize:mods` | Adds `modSummary` to events | OpenRouter (qwen). Saves every 50. |
+| Annotate sentiment | `npm run annotate:sentiment` | Adds `sentiment` to user_message | OpenRouter. very_delighted → very_upset. |
 | Slim | `npm run slim` | `public/events-slim.json` | Strips embeddings, truncates messages. Fast load. |
 
 One-liner after parse: `npm run mods-then-slim`
+
+## Views
+
+| View | URL | Description |
+|------|-----|--------------|
+| **Timeline** | `/timeline-view.html` | MD edits + sentiment on shared x-axis. Brush to zoom both. |
+| **MD Edits** | `/md-edits-view.html` | MD file writes over time. Dot size = bytes. |
+| **Sentiment** | `/user-sentiment-view.html` | User messages by sentiment. Dot size = message length. Click → god file. |
+| **Sentiment Summary** | `/sentiment-summary-view.html` | Bar chart of sentiment distribution and coverage. |
+| **God File** | `/god-file-view.html` | All events in one scrollable timeline. Filter by type. Deep-link via `#e-{index}`. |
+
+## Timeline View (combined)
+
+**http://localhost:5173/timeline-view.html**
+
+- **Shared x-axis:** Time (single brush zooms both charts)
+- **Top:** MD edits by file (same as MD edits view)
+- **Bottom:** User sentiment (same as sentiment view)
+- **Click:** Opens god file at that event in new tab
+- **Hover:** Shows @username when available (Discord)
+
+## MD Edits View
+
+**http://localhost:5173/md-edits-view.html**
+
+- **X-axis:** Time (brush to zoom)
+- **Y-axis:** SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md
+- **Dots:** Size = bytes written. Color per file.
+- **Hover:** Shows `modSummary`. Click opens full-edit modal.
+- **Modal:** Prior context + full edit content. Jump to edit in god file.
+
+## User Sentiment View
+
+**http://localhost:5173/user-sentiment-view.html**
+
+- **X-axis:** Time (brush to zoom)
+- **Y-axis:** very_delighted, delighted, neutral, upset, very_upset
+- **Dots:** Size = message length. Color by sentiment.
+- **Hover:** Shows @username (Discord) when available.
+- **Click:** Opens god file at that event in new tab.
+- **Requires:** `npm run annotate:sentiment` for labels. Without it, all show as neutral.
+
+## God File View
+
+**http://localhost:5173/god-file-view.html**
+
+- All events in chronological order with timestamps and session IDs
+- Filter by event type (User, Assistant, MD write, Tool, etc.)
+- Deep-link: `#e-{index}` scrolls to event (e.g. from sentiment click)
+- Shows @username for Discord user messages when available
 
 ## Static deploy (GitHub Pages, etc.)
 
@@ -41,21 +93,17 @@ One-liner after parse: `npm run mods-then-slim`
 npm run deploy
 ```
 
-Outputs `deploy/` with `index.html` and `events-slim.json` — pure HTML/JS, no server. Upload to any static host (GitHub Pages, Netlify, etc.). To link from bots.baulab.info: add a link to your deployed URL (e.g. `https://yourname.github.io/bot-log-viz/`).
+Outputs `deploy/` with `index.html` and `events-slim.json` — pure HTML/JS, no server. Redacts secrets (Discord tokens, GitHub PATs, API keys) before deploy.
 
-## MD Edits View (main viz)
+## Parser: Discord & sentiment
 
-**http://localhost:5173** — root redirects here.
-
-- **X-axis:** Time (brush to zoom)
-- **Y-axis:** SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md
-- **Dots:** Size = bytes written. Color per file. 10 sub-rows; dots are spaced vertically when they would overlap (based on pixel positions and radii).
-- **Hover:** Shows `modSummary` (or `summary`). Click opens full-edit modal.
-- **Modal:** Scrollable view with prior context (same-session events) and full edit content (diff or plain text). Jump-to-edit button when prior context exists. Close with Escape or click outside.
+- **Discord bot filter:** Messages from other Discord bots (detected via `[from: ...]` with `bot`/`is_bot`) are excluded from user_message events.
+- **Discord usernames:** When `[from: ...]` or `Name (handle):` format is present, `userName` is extracted and stored on user_message events. Shown in god file and dot tooltips.
+- **Sentiment preservation:** Re-running `npm run parse` merges sentiment from the existing events.json into the new output. No need to re-annotate after parse.
 
 ## Deprecated views
 
-The following are no longer the default; the main app (`/`) now redirects to the MD edits view. The old dashboard (bar charts, timeline, semantic search) remains in `src/` but is not served by default.
+The old dashboard (bar charts, timeline, semantic search) remains in `src/` but is not served by default.
 
 ## What Was Done
 
@@ -95,9 +143,11 @@ The parser emits `md_write` from both tool call and tool result. The modal shows
 
 | Script | Description |
 |--------|-------------|
-| `parse` | Parse logs → events.json |
+| `parse` | Parse logs → events.json. Preserves sentiment from existing file. |
 | `summarize:mods` | Add modSummary (OpenRouter) |
+| `annotate:sentiment` | Add sentiment to user_message (OpenRouter) |
 | `slim` | Generate events-slim.json |
 | `mods-then-slim` | summarize:mods && slim |
+| `deploy` | Build standalone deploy/ with redacted events |
 | `copy-logs` | Copy from ~/.openclaw, /tmp/openclaw |
 | `sample` | Generate demo logs |

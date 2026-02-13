@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log God File</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #141922;
+      --border: #1e2530;
+      --muted: #6b7a8f;
+      --text: #e4e8ef;
+      --accent: #5eb9ff;
+      --font-mono: ui-monospace, "Cascadia Code", Menlo, Monaco, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .sticky-header {
+      position: sticky; top: 0; z-index: 100; background: var(--bg); border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    }
+    .sticky-header h1 { margin: 0; font-size: 1.1rem; }
+    .sticky-header a { color: var(--accent); font-size: 0.9rem; }
+    .sticky-header .filter { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .sticky-header .filter label { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+    .sticky-header .filter input { accent-color: var(--accent); }
+    .content { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+    .event-block {
+      margin-bottom: 1rem; padding: 1rem; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; scroll-margin-top: 4rem;
+    }
+    .event-block.highlight { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(94,185,255,0.3); }
+    .event-block .meta {
+      font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem;
+      display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;
+    }
+    .event-block .meta .time { font-family: var(--font-mono); }
+    .event-block .meta .session { font-family: var(--font-mono); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+    .event-block .meta .type { font-weight: 600; }
+    .event-block .meta .user-name { color: #a78bfa; font-weight: 500; }
+    .event-block.user_message .meta .type { color: #4ade80; }
+    .event-block.assistant_message .meta .type { color: var(--accent); }
+    .event-block.md_write .meta .type { color: #a78bfa; }
+    .event-block.tool_call .meta .type { color: #fbbf24; }
+    .event-block .body { font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .event-block .body.compact { font-size: 0.8rem; max-height: 4em; overflow: hidden; text-overflow: ellipsis; }
+    .event-block .body.compact.expanded { max-height: none; }
+    .event-block .expand-btn { font-size: 0.75rem; color: var(--accent); cursor: pointer; margin-top: 0.25rem; }
+    .event-block.hidden { display: none; }
+    .loading { text-align: center; padding: 4rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="sticky-header">
+    <h1>Log God File</h1>
+    <a href="/user-sentiment-view.html">← Sentiment</a>
+    <a href="/md-edits-view.html">MD edits</a>
+    <div class="filter" id="type-filter"></div>
+  </div>
+  <div class="content" id="content">
+    <div class="loading">Loading…</div>
+  </div>
+  <script>
+    const TYPE_LABELS = {
+      user_message: "User",
+      assistant_message: "Assistant",
+      md_write: "MD write",
+      tool_call: "Tool",
+      success: "Success",
+      failure: "Failure",
+      email_sent: "Email",
+      moltbook_post: "Post",
+      moltbook_comment: "Comment",
+      cron: "Cron",
+      run_lifecycle: "Lifecycle",
+      heartbeat: "Heartbeat",
+    };
+    const COMPACT_TYPES = new Set(["tool_call", "md_write", "success", "failure"]);
+    const MAX_COMPACT_LEN = 300;
+    const MAX_EXPAND_LEN = 5000;
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s ?? "";
+      return div.innerHTML;
+    }
+
+    function shortSession(s) {
+      if (!s) return "";
+      return s.length > 12 ? s.slice(0, 8) + "…" : s;
+    }
+
+    function formatTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      } catch (_) { return iso; }
+    }
+
+    async function load() {
+      const res = await fetch("/events-slim.json");
+      const data = await res.json();
+      const events = (data.events || []).map((e, i) => ({ ...e, _index: i }));
+      const types = [...new Set(events.map(e => e.type))].sort();
+      const selectedTypes = new Set(types);
+
+      const filterEl = document.getElementById("type-filter");
+      filterEl.innerHTML = types.map(t => `
+        <label><input type="checkbox" data-type="${escapeHtml(t)}" checked> ${escapeHtml(TYPE_LABELS[t] || t)}</label>
+      `).join("");
+      filterEl.querySelectorAll("input").forEach(cb => {
+        cb.addEventListener("change", () => {
+          if (cb.checked) selectedTypes.add(cb.dataset.type);
+          else selectedTypes.delete(cb.dataset.type);
+          render(events, selectedTypes);
+        });
+      });
+
+      render(events, selectedTypes);
+    }
+
+    function render(events, selectedTypes) {
+      const content = document.getElementById("content");
+      const hash = location.hash.slice(1);
+      const targetId = hash.startsWith("e-") ? hash : null;
+
+      content.innerHTML = events.map(e => {
+        const isCompact = COMPACT_TYPES.has(e.type) && (e.message || "").length > MAX_COMPACT_LEN;
+        const msg = (e.message || "").trim();
+        const preview = isCompact ? msg.slice(0, MAX_COMPACT_LEN) + (msg.length > MAX_COMPACT_LEN ? "…" : "") : msg;
+        const expandContent = msg.length > MAX_EXPAND_LEN ? msg.slice(0, MAX_EXPAND_LEN) + "\n…" : msg;
+        const typeLabel = TYPE_LABELS[e.type] || e.type;
+        const category = e.category ? ` · ${e.category}` : "";
+        const isHidden = !selectedTypes.has(e.type) && targetId !== `e-${e._index}`;
+        return `
+          <div class="event-block ${e.type}${isHidden ? " hidden" : ""}" id="e-${e._index}" data-type="${escapeHtml(e.type)}">
+            <div class="meta">
+              <span class="time">${escapeHtml(formatTime(e.time))}</span>
+              <span class="session" title="${escapeHtml(e.sessionId || "")}">${escapeHtml(shortSession(e.sessionId))}</span>
+              <span class="type">${escapeHtml(typeLabel)}${escapeHtml(category)}</span>
+              ${e.userName ? `<span class="user-name" title="${escapeHtml(e.userHandle || e.userName)}">@${escapeHtml(e.userName)}</span>` : ""}
+              ${e.sentiment ? `<span style="color:#6b7a8f">${escapeHtml(e.sentiment)}</span>` : ""}
+            </div>
+            <div class="body ${isCompact ? "compact" : ""}" data-full="${escapeHtml(expandContent)}">${escapeHtml(preview)}</div>
+            ${isCompact ? `<div class="expand-btn" onclick="this.previousElementSibling.classList.toggle('expanded');this.previousElementSibling.textContent=this.previousElementSibling.dataset.full;this.remove()">Show more</div>` : ""}
+          </div>
+        `;
+      }).join("");
+
+      if (targetId) {
+        requestAnimationFrame(() => {
+          const el = document.getElementById(targetId);
+          if (el) {
+            el.classList.remove("hidden");
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.classList.add("highlight");
+            setTimeout(() => el.classList.remove("highlight"), 2000);
+          }
+        });
+      }
+    }
+
+    load().catch(e => {
+      document.getElementById("content").innerHTML = `<div class="loading">${escapeHtml(e.message)}</div>`;
+    });
+  </script>
+</body>
+</html>

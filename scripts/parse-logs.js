@@ -127,24 +127,58 @@ function fullContentForMdWrite(text) {
   return t.length > max ? t.slice(0, max) + "\n…[truncated]" : t;
 }
 
-/** Extract the actual user message from Discord-style format: "[...] Name (handle): message" */
-function extractUserMessageText(text) {
+/** Parse Discord-style format: "[...] Name (handle): message [from: ...]". Returns { message, author, handle, isBot }. */
+function parseDiscordUserMessage(text) {
+  const fromMatch = text.match(/\[from:\s*([^\]]+)\]\s*$/i);
+  const fromRaw = fromMatch ? fromMatch[1].trim() : "";
+  let isBot = false;
+  let author = "";
+  let handle = "";
+  if (fromRaw) {
+    if (/\bbot\b|is_bot|"bot"\s*:\s*true/i.test(fromRaw)) isBot = true;
+    try {
+      const parsed = JSON.parse(fromRaw);
+      if (parsed?.author?.bot === true || parsed?.bot === true) isBot = true;
+      author = parsed?.author?.username || parsed?.author?.displayName || parsed?.author?.name || parsed?.username || "";
+      handle = parsed?.author?.discriminator ? `${parsed.author.username}#${parsed.author.discriminator}` : author;
+    } catch (_) {
+      if (/\bbot\b/i.test(fromRaw)) isBot = true;
+    }
+  }
+  const authorMatch = text.match(/(?:^|\n)\s*\[[^\]]*\]\s*([^(]+)\s*\(([^)]+)\):\s*/);
+  if (authorMatch) {
+    if (!author) author = authorMatch[1].trim();
+    if (!handle) handle = authorMatch[2].trim();
+  }
   const match = text.match(/\):\s*([^\n]+)/);
+  let msg = "";
   if (match) {
-    let msg = match[1].trim();
+    msg = match[1].trim();
     msg = msg.replace(/\s*\[from:\s*[^\]]+\]\s*$/i, "").replace(/<@\d+>/g, "").trim();
-    if (msg.length > 0) return msg;
   }
-  const withoutBlocks = text.replace(/<<<EXTERNAL_UNTRUSTED_CONTENT>>>[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>/g, "").trim();
-  const firstLine = withoutBlocks.split("\n")[0] || "";
-  const m2 = firstLine.match(/\):\s*(.+)/);
-  if (m2) return m2[1].trim();
-  const lines = withoutBlocks.split("\n");
-  for (const line of lines) {
-    const t = line.trim();
-    if (t && !t.startsWith("[") && !/message_id|^\[from:/i.test(t)) return t;
+  if (!msg) {
+    const withoutBlocks = text.replace(/<<<EXTERNAL_UNTRUSTED_CONTENT>>>[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>/g, "").trim();
+    const firstLine = withoutBlocks.split("\n")[0] || "";
+    const m2 = firstLine.match(/\):\s*(.+)/);
+    if (m2) msg = m2[1].trim();
+    else {
+      const lines = withoutBlocks.split("\n");
+      for (const line of lines) {
+        const t = line.trim();
+        if (t && !t.startsWith("[") && !/message_id|^\[from:/i.test(t)) {
+          msg = t;
+          break;
+        }
+      }
+    }
   }
-  return text;
+  if (!msg) msg = text;
+  return { message: msg, author: author || null, handle: handle || author || null, isBot };
+}
+
+/** Legacy: extract message text only (for backward compat) */
+function extractUserMessageText(text) {
+  return parseDiscordUserMessage(text).message;
 }
 
 /** Build assistant content with actual response (text) first, then thinking - for better embedding quality */
@@ -273,9 +307,11 @@ function processJsonlEvent(obj, sessionId, isCron) {
     }
   }
 
-  // User message (for semantic search)
+  // User message (for semantic search) — skip Discord bot messages
   if (msg.role === "user" && fullText.trim()) {
-    const cleanText = extractUserMessageText(fullText);
+    const parsed = parseDiscordUserMessage(fullText);
+    if (parsed.isBot) return; // Skip messages from other Discord bots
+    const cleanText = parsed.message;
     const displayMsg = cleanText.length > 1500 ? cleanText.slice(0, 1500) + "…" : cleanText;
     addEvent({
       time: tsDate.toISOString(),
@@ -288,6 +324,8 @@ function processJsonlEvent(obj, sessionId, isCron) {
       sessionId,
       role: "user",
       embeddingText: cleanText.length > 512 ? cleanText.slice(0, 512) : cleanText,
+      ...(parsed.author && { userName: parsed.author }),
+      ...(parsed.handle && parsed.handle !== parsed.author && { userHandle: parsed.handle }),
     });
   }
 
@@ -534,9 +572,40 @@ const summary = {
     : null,
 };
 
+// Preserve sentiment annotations from existing events.json (reuse when re-parsing)
+let finalEvents = uniqueEvents;
+if (fs.existsSync(outputPath)) {
+  try {
+    const existing = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+    const oldEvents = existing.events || [];
+    const sentimentMap = new Map();
+    for (const e of oldEvents) {
+      if (e.type === "user_message" && e.sentiment) {
+        const key = `${e.sessionId || ""}|${e.time || ""}|${(e.message || "").slice(0, 200)}`;
+        sentimentMap.set(key, e.sentiment);
+      }
+    }
+    let preserved = 0;
+    finalEvents = uniqueEvents.map((e) => {
+      if (e.type === "user_message") {
+        const key = `${e.sessionId || ""}|${e.time || ""}|${(e.message || "").slice(0, 200)}`;
+        const s = sentimentMap.get(key);
+        if (s) {
+          preserved++;
+          return { ...e, sentiment: s };
+        }
+      }
+      return e;
+    });
+    if (preserved > 0) console.log(`Preserved ${preserved} sentiment annotations from existing events.json`);
+  } catch (err) {
+    console.warn("Could not merge sentiment from existing file:", err.message);
+  }
+}
+
 fs.writeFileSync(
   outputPath,
-  JSON.stringify({ events: uniqueEvents, summary }, null, 2),
+  JSON.stringify({ events: finalEvents, summary }, null, 2),
   "utf-8",
 );
 

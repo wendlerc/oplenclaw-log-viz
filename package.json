@@ -23,7 +23,8 @@
     "slim": "node scripts/slim-events.js",
     "summarize:mods": "node scripts/summarize-modifications.js",
     "mods-then-slim": "bash scripts/mods-then-slim.sh",
-    "deploy": "node scripts/build-standalone.js"
+    "deploy": "node scripts/build-standalone.js",
+    "annotate:sentiment": "node scripts/annotate-user-sentiment.js"
   },
   "dependencies": {
     "@xenova/transformers": "^2.17.2",

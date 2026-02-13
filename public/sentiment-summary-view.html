@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sentiment Annotations — Summary</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #141922;
+      --border: #1e2530;
+      --muted: #6b7a8f;
+      --text: #e4e8ef;
+      --accent: #5eb9ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 900px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .subtitle a { color: var(--accent); }
+    .stats {
+      display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 1rem 1.25rem; min-width: 140px;
+    }
+    .stat-card .value { font-size: 1.75rem; font-weight: 600; }
+    .stat-card .label { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+    #chart { width: 100%; min-height: 280px; }
+    .loading { text-align: center; padding: 4rem; color: var(--muted); }
+    .bar-label { font-size: 0.8rem; fill: var(--text); }
+    .bar-value { font-size: 0.75rem; fill: var(--muted); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Sentiment Annotations</h1>
+    <p class="subtitle">
+      Current state of user message sentiment labels.
+      <a href="/user-sentiment-view.html">Timeline</a> ·
+      <a href="/god-file-view.html">God file</a> ·
+      <a href="/md-edits-view.html">MD edits</a>.
+      To annotate all messages: <code>npm run annotate:sentiment</code> (no LIMIT; ~1–2 hrs for full dataset). Then <code>npm run slim</code>.
+    </p>
+    <div class="stats" id="stats"></div>
+    <div id="chart"></div>
+  </div>
+  <script>
+    const SENTIMENT_ORDER = ["very_delighted", "delighted", "neutral", "upset", "very_upset"];
+    const SENTIMENT_LABELS = {
+      very_delighted: "Very delighted",
+      delighted: "Delighted",
+      neutral: "Neutral",
+      upset: "Upset",
+      very_upset: "Very upset",
+    };
+    const SENTIMENT_COLORS = {
+      very_delighted: "#22c55e",
+      delighted: "#4ade80",
+      neutral: "#6b7a8f",
+      upset: "#f97316",
+      very_upset: "#ef4444",
+    };
+
+    async function load() {
+      document.getElementById("chart").innerHTML = '<div class="loading">Loading…</div>';
+      const res = await fetch("/events-slim.json");
+      const data = await res.json();
+      const events = data.events || [];
+      const userMsgs = events.filter(e => e.type === "user_message" && e.message?.trim());
+      const annotated = userMsgs.filter(e => e.sentiment != null);
+      const counts = {};
+      SENTIMENT_ORDER.forEach(s => { counts[s] = 0; });
+      annotated.forEach(e => {
+        const s = SENTIMENT_LABELS[e.sentiment] ? e.sentiment : "neutral";
+        counts[s] = (counts[s] || 0) + 1;
+      });
+
+      document.getElementById("stats").innerHTML = `
+        <div class="stat-card">
+          <div class="value">${annotated.length}</div>
+          <div class="label">Annotated</div>
+        </div>
+        <div class="stat-card">
+          <div class="value">${userMsgs.length}</div>
+          <div class="label">Total user messages</div>
+        </div>
+        <div class="stat-card">
+          <div class="value">${userMsgs.length ? Math.round((annotated.length / userMsgs.length) * 100) : 0}%</div>
+          <div class="label">Coverage</div>
+        </div>
+      `;
+
+      const chartData = SENTIMENT_ORDER.map(s => ({ sentiment: s, count: counts[s] || 0 }));
+      const total = chartData.reduce((a, d) => a + d.count, 0);
+      if (total === 0) {
+        document.getElementById("chart").innerHTML = '<div class="loading">No sentiment annotations yet. Run <code>npm run annotate:sentiment</code>.</div>';
+        return;
+      }
+
+      const width = Math.max(800, document.getElementById("chart").clientWidth || 800);
+      const height = 260;
+      const margin = { top: 20, right: 20, bottom: 50, left: 120 };
+      const innerWidth = width - margin.left - margin.right;
+      const innerHeight = height - margin.top - margin.bottom;
+
+      const svg = d3.select("#chart").html("").append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .attr("viewBox", `0 0 ${width} ${height}`);
+
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+      const maxCount = d3.max(chartData, d => d.count) || 1;
+      const xScale = d3.scaleLinear().domain([0, maxCount]).range([0, innerWidth]);
+      const yScale = d3.scaleBand().domain(SENTIMENT_ORDER).range([0, innerHeight]).padding(0.25);
+
+      g.append("g").attr("transform", `translate(0,${innerHeight})`)
+        .call(d3.axisBottom(xScale).ticks(6))
+        .selectAll("text").attr("fill", "#6b7a8f").style("font-size", "10px");
+      g.append("g").call(d3.axisLeft(yScale).tickSize(0))
+        .selectAll("text").attr("fill", "#6b7a8f").style("font-size", "11px")
+        .text(d => SENTIMENT_LABELS[d]);
+
+      const bars = g.selectAll("g.bar").data(chartData).join("g").attr("class", "bar")
+        .attr("transform", d => `translate(0,${yScale(d.sentiment)})`);
+
+      bars.append("rect")
+        .attr("x", 0)
+        .attr("y", 2)
+        .attr("height", yScale.bandwidth() - 4)
+        .attr("width", d => xScale(d.count))
+        .attr("fill", d => SENTIMENT_COLORS[d.sentiment])
+        .attr("rx", 4);
+
+      bars.append("text")
+        .attr("class", "bar-value")
+        .attr("x", d => xScale(d.count) + 6)
+        .attr("y", yScale.bandwidth() / 2)
+        .attr("dy", "0.35em")
+        .text(d => d.count > 0 ? `${d.count} (${Math.round((d.count / total) * 100)}%)` : "");
+
+      document.getElementById("chart").appendChild(svg.node());
+    }
+
+    load().catch(e => {
+      document.getElementById("chart").innerHTML = `<div class="loading">${e.message || "Failed to load"}</div>`;
+    });
+  </script>
+</body>
+</html>
