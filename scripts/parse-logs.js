@@ -116,6 +116,13 @@ function summarizePrompt(text) {
   return truncated.replace(/\n/g, " ").trim();
 }
 
+/** For md_write: keep full content (up to 100k) so summarization and modal can use it. */
+function fullContentForMdWrite(text) {
+  const t = (text || "").trim();
+  const max = 100_000;
+  return t.length > max ? t.slice(0, max) + "\n…[truncated]" : t;
+}
+
 /** Extract the actual user message from Discord-style format: "[...] Name (handle): message" */
 function extractUserMessageText(text) {
   const match = text.match(/\):\s*([^\n]+)/);
@@ -192,7 +199,7 @@ function processJsonlEvent(obj, sessionId, isCron) {
         time: tsDate.toISOString(),
         type: "md_write",
         category: mdFile,
-        message: summarizePrompt(msg),
+        message: fullContentForMdWrite(msg),
         level: "info",
         subsystem: "cron",
         runId: obj.jobId,
@@ -239,7 +246,7 @@ function processJsonlEvent(obj, sessionId, isCron) {
             time: tsDate.toISOString(),
             type: "md_write",
             category: mdFile,
-            message: summarizePrompt(c.arguments?.content || argsStr),
+            message: fullContentForMdWrite(c.arguments?.content || argsStr),
             level: "info",
             subsystem: "session",
             runId: obj.id,
@@ -323,7 +330,7 @@ function processJsonlEvent(obj, sessionId, isCron) {
           time: tsDate.toISOString(),
           type: "md_write",
           category: mdFile,
-          message: summarizePrompt(resultText),
+          message: fullContentForMdWrite(resultText),
           level: "info",
           subsystem: "session",
           runId: obj.id,
@@ -388,7 +395,7 @@ function processLogFile(filePath) {
         time: tsDate.toISOString(),
         type: "md_write",
         category: mdFile,
-        message: summarizePrompt(msg),
+        message: fullContentForMdWrite(msg),
         level,
         subsystem,
         runId: extractRunId(msg),

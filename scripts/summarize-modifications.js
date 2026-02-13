@@ -16,7 +16,7 @@ const eventsPath = path.join(projectRoot, "public", "events.json");
 
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = "qwen/qwen3-vl-32b-instruct";
-const MAX_INPUT_CHARS = 2000;
+const MAX_INPUT_CHARS = 12000; // enough for full edit content to produce concrete summaries
 const DELAY_MS = 300;
 const TARGET_FILES = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md"];
 
@@ -40,9 +40,11 @@ async function summarizeModification(apiKey, text, filename) {
       model: MODEL,
       messages: [{
         role: "user",
-        content: `Parse this log message about a file write/edit. Strip tool call markup, JSON, chat templates, and boilerplate. Extract the actual modification.
+        content: `Parse this log message about a file write/edit. Strip tool call markup, JSON, chat templates, and boilerplate.
 
-Return ONLY a one-sentence summary (max 15 words) of what change was made. If the message is just "Successfully wrote X bytes", return something like "Wrote X bytes" or "File updated".
+Your summary MUST describe the SPECIFIC CONTENT that was written — what topic, what was added or changed, concrete details. NEVER use generic phrases like "updated with context", "added information", "stored context", "updated memory", "wrote to file". Be concrete: e.g. "Added beads task to debug Discord DM" or "Recorded security test results vs Jarvis" or "Logged user preference for dark mode".
+
+Return ONLY one sentence (max 18 words). If the message is just "Successfully wrote X bytes" with no content, return "Wrote X bytes".
 
 File: ${filename}
 
@@ -66,13 +68,15 @@ ${truncated}`,
 }
 
 const LIMIT = parseInt(process.env.LIMIT || "0", 10) || 0;
+const FORCE = process.env.FORCE === "1" || process.env.FORCE === "true";
 const SAVE_INTERVAL = 50;
 
 async function runBatch(apiKey, data, eventsPath) {
   const events = data.events ?? [];
   let mdWrites = events
     .filter(e => e.type === "md_write" && TARGET_FILES.includes(e.category) && e.message?.trim())
-    .filter(e => !e.modSummary);
+    .filter(e => FORCE || !e.modSummary);
+  if (FORCE) mdWrites.forEach(e => delete e.modSummary);
   if (mdWrites.length === 0) return { ok: 0, err: 0 };
   if (LIMIT > 0) mdWrites = mdWrites.slice(0, LIMIT);
 

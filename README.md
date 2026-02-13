@@ -41,8 +41,9 @@ One-liner after parse: `npm run mods-then-slim`
 
 - **X-axis:** Time (brush to zoom)
 - **Y-axis:** SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md
-- **Dots:** Size = bytes written. Color per file. 10 sub-rows to reduce overlap.
-- **Hover:** Shows `modSummary` (or `summary`)
+- **Dots:** Size = bytes written. Color per file. 10 sub-rows; dots are spaced vertically when they would overlap (based on pixel positions and radii).
+- **Hover:** Shows `modSummary` (or `summary`). Long-hover (~700ms) or click opens full-edit modal.
+- **Modal:** Scrollable view with prior context (same-session events) and full edit content. Jump-to-edit button when prior context exists. Close with Escape or click outside.
 
 ## What Was Done
 
@@ -52,13 +53,18 @@ One-liner after parse: `npm run mods-then-slim`
   - Tool calls `write` / `edit` with `path` to an MD file
   - Tool results `write` / `edit` with "Successfully wrote X bytes to ..."
 - Plain logs: only when message contains "wrote", "updated", "edited", or byte count.
+- **Full content for md_write:** Stores full edit content (up to 100k chars) instead of truncating to 120 chars, so summarization and modal can use it.
 
 ### Modification summaries
 - `summarize:mods` uses `qwen/qwen3-vl-32b-instruct` to parse boilerplate (tool JSON, chat templates) and produce one-sentence summaries.
+- Prompt emphasizes concrete content; avoids generic phrases like "updated with context".
+- Input up to 12k chars per event for better summaries.
 - Requires `OPENROUTER_API_KEY` in `.env` or env.
+- Re-summarize with new prompt: `FORCE=1 npm run summarize:mods`
 
 ### Slim file
 - `events-slim.json` strips embeddings and truncates messages for fast dashboard load (~17MB vs ~486MB full).
+- Keeps full message for `md_write` (up to 50k chars) for modal view.
 
 ## Other Views
 

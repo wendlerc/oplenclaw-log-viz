@@ -14,12 +14,14 @@ const inputPath = path.join(projectRoot, "public", "events.json");
 const outputPath = path.join(projectRoot, "public", "events-slim.json");
 
 const MAX_MESSAGE_LEN = 400;
+const MAX_MESSAGE_LEN_MD_WRITE = 50000; // keep full content for md_write (modal view)
 
 function slimEvent(e) {
   const { embedding, embeddingText, ...rest } = e;
   let message = rest.message ?? "";
-  if (message.length > MAX_MESSAGE_LEN) {
-    message = message.slice(0, MAX_MESSAGE_LEN) + "…";
+  const maxLen = e.type === "md_write" ? MAX_MESSAGE_LEN_MD_WRITE : MAX_MESSAGE_LEN;
+  if (message.length > maxLen) {
+    message = message.slice(0, maxLen) + "…";
   }
   return { ...rest, message }; // keeps summary, modSummary, bytes
 }

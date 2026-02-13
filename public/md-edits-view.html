@@ -36,6 +36,34 @@
     .tooltip .time { font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
     .tooltip .summary { color: var(--text); }
     .tooltip .bytes { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 2000;
+      align-items: center; justify-content: center; padding: 2rem;
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      max-width: 90vw; max-height: 85vh; width: 700px; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-header h2 { margin: 0; font-size: 1rem; color: var(--accent); }
+    .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1.5rem; line-height: 1; padding: 0 0.25rem; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body {
+      overflow-y: auto; padding: 1rem 1.25rem; font-family: var(--font-mono); font-size: 0.8rem;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    }
+    .modal-body .section { margin-bottom: 1rem; }
+    .modal-body .section-title { font-weight: 600; color: var(--muted); font-size: 0.75rem; margin-bottom: 0.5rem; text-transform: uppercase; }
+    .modal-body .edit-content { background: var(--bg); padding: 0.75rem; border-radius: 6px; }
+    .modal-body .prior-event { margin-bottom: 0.5rem; padding: 0.5rem; background: var(--bg); border-radius: 4px; font-size: 0.75rem; }
+    .modal-body .prior-event .role { color: var(--accent); font-weight: 600; }
+    .modal-actions { padding: 0.75rem 1.25rem; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .modal-actions button { background: var(--border); border: none; color: var(--accent); padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .modal-actions button:hover { background: var(--muted); }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 </head>
@@ -50,12 +78,24 @@
     <div id="chart"></div>
   </div>
   <div class="tooltip" id="tooltip"></div>
+  <div class="modal-overlay" id="modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modal-title">Edit</h2>
+        <button type="button" class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-actions">
+        <button type="button" id="btn-jump-edit">Jump to edit</button>
+      </div>
+    </div>
+  </div>
   <script>
     const TARGET_FILES = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md"];
     const ROWS_PER_FILE = 10;
     const DOT_SIZE_MIN = 4;
     const DOT_SIZE_MAX = 20;
-    const OVERLAP_MS = 2000; // dots within 2 sec stack in different rows
+    const DOT_PADDING = 4; // extra px between dots to avoid overlap
 
     const FILE_COLORS = {
       "SOUL.md": "#5eb9ff",
@@ -67,22 +107,28 @@
     };
 
     let allEdits = [];
+    let allEvents = [];
     let timeDomain = null;
+    const LONG_HOVER_MS = 700;
+    let hoverTimer = null;
 
-    function assignSubRows(edits) {
+    /** Assign sub-rows so dots don't overlap visually. Uses pixel positions and radii. */
+    function assignSubRows(edits, xScale, sizeScale) {
       const byFile = d3.group(edits, d => d.category);
       const result = [];
       for (const [file, dots] of byFile) {
         const sorted = [...dots].sort((a, b) => a.time - b.time);
-        const lastTimeByRow = Array(ROWS_PER_FILE).fill(-Infinity);
+        const rowOccupants = Array.from({ length: ROWS_PER_FILE }, () => []); // [{x, r}, ...]
         for (const d of sorted) {
-          const t = d.time.getTime();
+          const x = xScale(d.time);
+          const r = sizeScale(d.bytes);
           let row = 0;
           for (; row < ROWS_PER_FILE; row++) {
-            if (t - lastTimeByRow[row] >= OVERLAP_MS) break;
+            const overlaps = rowOccupants[row].some(o => Math.abs(x - o.x) < r + o.r + DOT_PADDING);
+            if (!overlaps) break;
           }
           row = Math.min(row, ROWS_PER_FILE - 1);
-          lastTimeByRow[row] = t;
+          rowOccupants[row].push({ x, r });
           result.push({ ...d, subRow: row, laneId: `${file}::${row}` });
         }
       }
@@ -94,6 +140,7 @@
       const res = await fetch("/events-slim.json");
       const data = await res.json();
       const events = data.events || [];
+      allEvents = events.map(e => ({ ...e, time: new Date(e.time) }));
       allEdits = events
         .filter(e => e.type === "md_write" && TARGET_FILES.includes(e.category))
         .map(e => ({
@@ -122,11 +169,12 @@
 
       const [start, end] = timeDomain;
       const filtered = allEdits.filter(e => e.time >= start && e.time <= end);
-      const withSubRows = assignSubRows(filtered);
+      const extent = d3.extent(filtered, d => d.bytes) || [0, 1000];
+      const sizeScale = d3.scaleSqrt().domain(extent).range([DOT_SIZE_MIN, DOT_SIZE_MAX]);
+      const xScale = d3.scaleTime().domain([start, end]).range([0, innerWidth]);
+      const withSubRows = assignSubRows(filtered, xScale, sizeScale);
 
       const lanes = TARGET_FILES.flatMap(f => Array.from({ length: ROWS_PER_FILE }, (_, i) => `${f}::${i}`));
-      const extent = d3.extent(withSubRows, d => d.bytes) || [0, 1000];
-      const sizeScale = d3.scaleSqrt().domain(extent).range([DOT_SIZE_MIN, DOT_SIZE_MAX]);
 
       const svg = d3.select(chartEl)
         .append("svg")
@@ -137,9 +185,6 @@
       const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
       const brushG = svg.append("g").attr("transform", `translate(${margin.left},${height + 8})`);
 
-      const xScale = d3.scaleTime()
-        .domain([start, end])
-        .range([0, innerWidth]);
       const yScale = d3.scaleBand()
         .domain(lanes)
         .range([0, innerHeight])
@@ -163,21 +208,61 @@
         .style("cursor", "pointer");
 
       const tooltip = document.getElementById("tooltip");
+      const modalEl = document.getElementById("modal");
+      const modalBody = document.getElementById("modal-body");
+      const modalTitle = document.getElementById("modal-title");
+
+      function openModal(d) {
+        clearTimeout(hoverTimer);
+        hoverTimer = null;
+        tooltip.style.visibility = "hidden";
+        const prior = (d.sessionId ? allEvents.filter(e =>
+          e.sessionId === d.sessionId && e.time < d.time
+        ) : []).sort((a, b) => b.time - a.time).slice(0, 8);
+        modalTitle.textContent = `${d.category} — ${d3.timeFormat("%b %d %H:%M:%S")(d.time)}`;
+        let html = "";
+        if (prior.length) {
+          html += '<div class="section"><div class="section-title">Prior context</div>';
+          prior.forEach(p => {
+            const role = p.role || p.type || p.category || "event";
+            const preview = (p.message || p.modSummary || "").slice(0, 200);
+            html += `<div class="prior-event"><span class="role">${role}</span> ${d3.timeFormat("%H:%M:%S")(p.time)} — ${escapeHtml(preview)}${preview.length >= 200 ? "…" : ""}</div>`;
+          });
+          html += "</div>";
+        }
+        html += '<div class="section" id="edit-section"><div class="section-title">Edit content</div>';
+        html += `<div class="edit-content">${escapeHtml(d.message || "(no content)")}</div></div>`;
+        modalBody.innerHTML = html;
+        document.getElementById("btn-jump-edit").style.display = prior.length ? "block" : "none";
+        modalEl.classList.add("visible");
+      }
+
+      function escapeHtml(s) {
+        const div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
       dots
         .on("mouseenter", (ev, d) => {
           tooltip.innerHTML = `
             <div class="file">${d.category}</div>
             <div class="time">${d3.timeFormat("%b %d %H:%M:%S")(d.time)}</div>
             <div class="summary">${(d.modSummary || d.summary || d.message || "").slice(0, 300)}${(d.modSummary || d.summary || d.message || "").length > 300 ? "…" : ""}</div>
-            <div class="bytes">${d.bytes} bytes</div>
+            <div class="bytes">${d.bytes} bytes — click or hold to view full</div>
           `;
           tooltip.style.visibility = "visible";
+          hoverTimer = setTimeout(() => openModal(d), LONG_HOVER_MS);
         })
         .on("mousemove", (ev) => {
           tooltip.style.top = (ev.pageY + 12) + "px";
           tooltip.style.left = Math.min(ev.pageX + 12, window.innerWidth - 420) + "px";
         })
-        .on("mouseleave", () => { tooltip.style.visibility = "hidden"; });
+        .on("mouseleave", () => {
+          tooltip.style.visibility = "hidden";
+          if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+        })
+        .on("click", (ev, d) => { ev.stopPropagation(); openModal(d); });
 
       // Brush for time window (flag prevents recursion: brush.move fires "end")
       const fullExtent = [allEdits[0].time, allEdits[allEdits.length - 1].time];
@@ -208,6 +293,21 @@
         timeDomain = [allEdits[0].time, allEdits[allEdits.length - 1].time];
         render();
       }
+    });
+
+    function closeModal() {
+      document.getElementById("modal").classList.remove("visible");
+    }
+    document.getElementById("modal-close").addEventListener("click", closeModal);
+    document.getElementById("modal").addEventListener("click", (ev) => {
+      if (ev.target === document.getElementById("modal")) closeModal();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.getElementById("modal").classList.contains("visible")) closeModal();
+    });
+    document.getElementById("btn-jump-edit").addEventListener("click", () => {
+      const el = document.getElementById("edit-section");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     });
 
     loadData().catch(e => {
