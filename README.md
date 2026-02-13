@@ -1,8 +1,8 @@
 # OpenClaw Log Viz
 
-Visualize OpenClaw/moltbot logs: MD file edits, event timeline, and semantic search.
+Visualize OpenClaw/moltbot logs: MD file edits with diff-based summaries.
 
-## Quick Start (from logs folder only)
+## Quick Start
 
 ```bash
 # 1. Clone and install
@@ -22,7 +22,7 @@ npm run slim
 
 # 4. Run
 npm run dev
-# Open http://localhost:5173/md-edits-view.html
+# Open http://localhost:5173 (redirects to MD edits view)
 ```
 
 ## Pipeline Overview
@@ -35,15 +35,27 @@ npm run dev
 
 One-liner after parse: `npm run mods-then-slim`
 
-## MD Edits View
+## Static deploy (GitHub Pages, etc.)
 
-**http://localhost:5173/md-edits-view.html**
+```bash
+npm run deploy
+```
+
+Outputs `deploy/` with `index.html` and `events-slim.json` — pure HTML/JS, no server. Upload to any static host (GitHub Pages, Netlify, etc.). To link from bots.baulab.info: add a link to your deployed URL (e.g. `https://yourname.github.io/bot-log-viz/`).
+
+## MD Edits View (main viz)
+
+**http://localhost:5173** — root redirects here.
 
 - **X-axis:** Time (brush to zoom)
 - **Y-axis:** SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md
 - **Dots:** Size = bytes written. Color per file. 10 sub-rows; dots are spaced vertically when they would overlap (based on pixel positions and radii).
-- **Hover:** Shows `modSummary` (or `summary`). Long-hover (~700ms) or click opens full-edit modal.
-- **Modal:** Scrollable view with prior context (same-session events) and full edit content. Jump-to-edit button when prior context exists. Close with Escape or click outside.
+- **Hover:** Shows `modSummary` (or `summary`). Click opens full-edit modal.
+- **Modal:** Scrollable view with prior context (same-session events) and full edit content (diff or plain text). Jump-to-edit button when prior context exists. Close with Escape or click outside.
+
+## Deprecated views
+
+The following are no longer the default; the main app (`/`) now redirects to the MD edits view. The old dashboard (bar charts, timeline, semantic search) remains in `src/` but is not served by default.
 
 ## What Was Done
 
@@ -56,24 +68,28 @@ One-liner after parse: `npm run mods-then-slim`
 - **Full content for md_write:** Stores full edit content (up to 100k chars) instead of truncating to 120 chars, so summarization and modal can use it.
 
 ### Modification summaries
-- `summarize:mods` uses `qwen/qwen3-vl-32b-instruct` to parse boilerplate (tool JSON, chat templates) and produce one-sentence summaries.
-- Prompt emphasizes concrete content; avoids generic phrases like "updated with context".
-- Input up to 12k chars per event for better summaries.
+- `summarize:mods` uses `qwen/qwen3-vl-32b-instruct` to summarize diffs, tool call JSON, or plain text.
+- Summaries describe the specific change (what was added/removed/modified).
+- Input up to 12k chars per event; handles unified diffs (`-` removed, `+` added).
 - Requires `OPENROUTER_API_KEY` in `.env` or env.
-- Re-summarize with new prompt: `FORCE=1 npm run summarize:mods`
+- Re-summarize: `FORCE=1 npm run summarize:mods`
 
 ### Slim file
 - `events-slim.json` strips embeddings and truncates messages for fast dashboard load (~17MB vs ~486MB full).
 - Keeps full message for `md_write` (up to 50k chars) for modal view.
 
-## Other Views
-
-- **Main dashboard:** http://localhost:5173 — bar charts, timeline, semantic search
-- **Semantic search** (optional): `npm run download-model` then `npm run embed`
-
 ## Log Format
 
 Expects JSONL with `type: "message"`, `message.role`, `message.content` (toolCall, toolResult, text, thinking). Also plain `.log` with `time`, `level`, `message`.
+
+### Write/Edit tool structure (what the logs contain)
+
+| Source | write | edit |
+|--------|-------|------|
+| **Tool call** (`content[].type: "toolCall"`) | `arguments.path`, `arguments.content` (full file) | `arguments.path`, `arguments.oldText`, `arguments.newText` |
+| **Tool result** (`role: "toolResult"`) | `content[0].text`: "Successfully wrote X bytes to …" | `content[0].text`: "Successfully replaced text in …"<br>`details.diff`: unified diff of changes |
+
+The parser emits `md_write` from both tool call and tool result. The modal shows whichever event the dot represents. Tool-call events have full content; tool-result events use `details.diff` when available (edit) or the short confirmation text (write).
 
 ## Scripts
 

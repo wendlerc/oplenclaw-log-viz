@@ -12,3 +12,4 @@ logs/*.jsonl
 logs/**/*.jsonl
 *.log
 summarize-mods.log
+deploy/

@@ -81,11 +81,15 @@ function getSubsystem(obj) {
 }
 
 function extractMdFile(text) {
-  const upper = text.toUpperCase();
+  // Prefer exact filename from path (avoids "cross-session-memory.md" matching MEMORY.md)
+  const pathMatch = text.match(/(?:[/\\]|")([A-Za-z0-9_.-]+\.md)(?=["'\s)\]]|$)/);
+  if (pathMatch) return pathMatch[1];
+  // Fallback: explicit mentions of known files (require word boundary to avoid substring false positives)
   for (const f of MD_FILES) {
-    if (text.includes(f) || upper.includes(f.toUpperCase())) return f;
+    const re = new RegExp(`(?:^|[\\s/\\"\\(])${f.replace(".", "\\.")}(?:[\\s\\"\\)]|$)`, "i");
+    if (re.test(text)) return f;
   }
-  const match = text.match(/(?:[/\\]?)(?:data[/\\]workspace[/\\])?([A-Z][A-Za-z0-9_-]+\.md)/);
+  const match = text.match(/(?:[/\\]?)(?:data[/\\]workspace[/\\])?([A-Za-z][A-Za-z0-9_.-]*\.md)/);
   return match ? match[1] : null;
 }
 
@@ -321,22 +325,28 @@ function processJsonlEvent(obj, sessionId, isCron) {
     });
     const toolName = (msg.toolName || "").replace(/^functions\./, "");
     if ((toolName === "write" || toolName === "edit") && /successfully\s+(wrote|replaced|updated)/i.test(resultText)) {
-      const mdFile = extractMdFile(resultText);
+      const mdFile = extractMdFile(resultText) || extractMdFile(JSON.stringify(msg.details || {}));
       if (mdFile) {
         const bytes = extractBytes(resultText);
         mdWriteCounts[mdFile] = (mdWriteCounts[mdFile] ?? 0) + 1;
         if (bytes) mdWriteBytes[mdFile] = (mdWriteBytes[mdFile] ?? 0) + bytes;
-        addEvent({
-          time: tsDate.toISOString(),
-          type: "md_write",
-          category: mdFile,
-          message: fullContentForMdWrite(resultText),
-          level: "info",
-          subsystem: "session",
-          runId: obj.id,
-          sessionId,
-          ...(bytes != null && { bytes }),
-        });
+        // Only emit md_write from tool result when we have useful content. Otherwise we already
+        // have it from the tool call (which has full content). Write results are always just
+        // "Successfully wrote X bytes" — skip. Edit results: only when we have details.diff.
+        const editDiff = msg.details?.diff;
+        if (toolName === "edit" && editDiff) {
+          addEvent({
+            time: tsDate.toISOString(),
+            type: "md_write",
+            category: mdFile,
+            message: fullContentForMdWrite(editDiff),
+            level: "info",
+            subsystem: "session",
+            runId: obj.id,
+            sessionId,
+            ...(bytes != null && { bytes }),
+          });
+        }
       }
     }
     const rt = resultText.toLowerCase();

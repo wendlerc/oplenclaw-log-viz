@@ -18,8 +18,6 @@ const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = "qwen/qwen3-vl-32b-instruct";
 const MAX_INPUT_CHARS = 12000; // enough for full edit content to produce concrete summaries
 const DELAY_MS = 300;
-const TARGET_FILES = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md"];
-
 function truncate(text, maxLen = MAX_INPUT_CHARS) {
   const t = (text || "").trim();
   if (!t) return "";
@@ -40,15 +38,18 @@ async function summarizeModification(apiKey, text, filename) {
       model: MODEL,
       messages: [{
         role: "user",
-        content: `Parse this log message about a file write/edit. Strip tool call markup, JSON, chat templates, and boilerplate.
+        content: `Summarize this file edit. The input may be:
+- A unified diff (- lines removed, + lines added)
+- Tool call JSON with path, oldText, newText, or content
+- Plain text
 
-Your summary MUST describe the SPECIFIC CONTENT that was written — what topic, what was added or changed, concrete details. NEVER use generic phrases like "updated with context", "added information", "stored context", "updated memory", "wrote to file". Be concrete: e.g. "Added beads task to debug Discord DM" or "Recorded security test results vs Jarvis" or "Logged user preference for dark mode".
+Describe the SPECIFIC change — what was added, removed, or modified. Be concrete: e.g. "Replaced hardcoded password with placeholder in TOOLS.md" or "Added browser automation section to docs". NEVER use generic phrases like "updated with context", "added information", "stored context".
 
-Return ONLY one sentence (max 18 words). If the message is just "Successfully wrote X bytes" with no content, return "Wrote X bytes".
+Return ONLY one sentence (max 18 words). If the input is just "Successfully wrote X bytes" with no content, return "Wrote X bytes".
 
 File: ${filename}
 
-Message:
+Input:
 ${truncated}`,
       }],
       max_tokens: 80,
@@ -74,7 +75,7 @@ const SAVE_INTERVAL = 50;
 async function runBatch(apiKey, data, eventsPath) {
   const events = data.events ?? [];
   let mdWrites = events
-    .filter(e => e.type === "md_write" && TARGET_FILES.includes(e.category) && e.message?.trim())
+    .filter(e => e.type === "md_write" && e.category && e.message?.trim())
     .filter(e => FORCE || !e.modSummary);
   if (FORCE) mdWrites.forEach(e => delete e.modSummary);
   if (mdWrites.length === 0) return { ok: 0, err: 0 };

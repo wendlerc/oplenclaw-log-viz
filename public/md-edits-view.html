@@ -25,6 +25,19 @@
       color: var(--accent); padding: 0.4rem 0.8rem; font-size: 0.85rem; cursor: pointer;
     }
     .controls button:hover { background: var(--border); }
+    .file-filter {
+      display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem;
+      padding: 0.75rem; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);
+      max-height: 120px; overflow-y: auto;
+    }
+    .file-filter label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; cursor: pointer; }
+    .file-filter label input { accent-color: var(--accent); }
+    .file-filter .filter-actions { margin-right: 0.5rem; }
+    .file-filter button {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--accent); padding: 0.3rem 0.6rem; font-size: 0.8rem; cursor: pointer;
+    }
+    .file-filter button:hover { background: var(--border); }
     .loading { text-align: center; padding: 4rem; color: var(--muted); }
     #chart { width: 100%; min-height: 400px; overflow-x: auto; }
     .tooltip {
@@ -70,7 +83,8 @@
 <body>
   <div class="container">
     <h1>MD File Edits</h1>
-    <p class="subtitle">SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md — dot size = bytes written</p>
+    <p class="subtitle">Dot size = bytes written. Filter by file below.</p>
+    <div class="file-filter" id="file-filter"></div>
     <div class="controls">
       <button type="button" id="btn-reset">Reset time window</button>
       <span id="range-label" style="color: var(--muted); font-size: 0.85rem;"></span>
@@ -91,26 +105,27 @@
     </div>
   </div>
   <script>
-    const TARGET_FILES = ["SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md"];
     const ROWS_PER_FILE = 10;
     const DOT_SIZE_MIN = 4;
     const DOT_SIZE_MAX = 20;
     const DOT_PADDING = 4; // extra px between dots to avoid overlap
 
-    const FILE_COLORS = {
-      "SOUL.md": "#5eb9ff",
-      "AGENTS.md": "#a78bfa",
-      "IDENTITY.md": "#34d399",
-      "USER.md": "#f59e0b",
-      "MEMORY.md": "#f472b6",
-      "HEARTBEAT.md": "#22c55e",
-    };
+    const COLOR_PALETTE = [
+      "#5eb9ff", "#a78bfa", "#34d399", "#f59e0b", "#f472b6", "#22c55e",
+      "#06b6d4", "#ec4899", "#8b5cf6", "#14b8a6", "#f97316", "#eab308",
+      "#6366f1", "#10b981", "#ef4444", "#84cc16", "#0ea5e9", "#d946ef",
+    ];
 
     let allEdits = [];
     let allEvents = [];
+    let allFiles = [];
+    let selectedFiles = new Set();
     let timeDomain = null;
-    const LONG_HOVER_MS = 700;
-    let hoverTimer = null;
+
+    function fileColor(file) {
+      const i = allFiles.indexOf(file);
+      return COLOR_PALETTE[i % COLOR_PALETTE.length];
+    }
 
     /** Assign sub-rows so dots don't overlap visually. Uses pixel positions and radii. */
     function assignSubRows(edits, xScale, sizeScale) {
@@ -135,25 +150,58 @@
       return result;
     }
 
+    function buildFileFilter() {
+      const el = document.getElementById("file-filter");
+      el.innerHTML = "";
+      const actions = document.createElement("span");
+      actions.className = "filter-actions";
+      actions.innerHTML = `<button type="button" id="filter-all">All</button> <button type="button" id="filter-none">None</button>`;
+      el.appendChild(actions);
+      for (const f of allFiles) {
+        const label = document.createElement("label");
+        const count = allEdits.filter(e => e.category === f).length;
+        label.innerHTML = `<input type="checkbox" data-file="${f}" ${selectedFiles.has(f) ? "checked" : ""}> <span style="color:${fileColor(f)}">●</span> ${f} (${count})`;
+        label.querySelector("input").addEventListener("change", (ev) => {
+          if (ev.target.checked) selectedFiles.add(f);
+          else selectedFiles.delete(f);
+          render();
+        });
+        el.appendChild(label);
+      }
+      document.getElementById("filter-all").addEventListener("click", () => {
+        allFiles.forEach(f => selectedFiles.add(f));
+        el.querySelectorAll("input[data-file]").forEach(cb => { cb.checked = true; });
+        render();
+      });
+      document.getElementById("filter-none").addEventListener("click", () => {
+        selectedFiles.clear();
+        el.querySelectorAll("input[data-file]").forEach(cb => { cb.checked = false; });
+        render();
+      });
+    }
+
     async function loadData() {
       document.getElementById("chart").innerHTML = '<div class="loading">Loading events…</div>';
       const res = await fetch("/events-slim.json");
       const data = await res.json();
       const events = data.events || [];
       allEvents = events.map(e => ({ ...e, time: new Date(e.time) }));
-      allEdits = events
-        .filter(e => e.type === "md_write" && TARGET_FILES.includes(e.category))
-        .map(e => ({
-          ...e,
-          time: new Date(e.time),
-          bytes: e.bytes ?? (e.message ? e.message.length : 0),
-        }))
-        .sort((a, b) => a.time - b.time);
+      const mdWrites = events.filter(e => e.type === "md_write" && e.category);
+      allEdits = mdWrites.map(e => ({
+        ...e,
+        time: new Date(e.time),
+        bytes: e.bytes ?? (e.message ? e.message.length : 0),
+      })).sort((a, b) => a.time - b.time);
+      allFiles = [...new Set(allEdits.map(e => e.category))].sort();
+      const defaultFiles = ["SOUL.md", "USER.md", "AGENTS.md", "MEMORY.md", "IDENTITY.md"];
+      selectedFiles = new Set(allFiles.filter(f => defaultFiles.includes(f)));
+      if (selectedFiles.size === 0) selectedFiles = new Set(allFiles);
       if (allEdits.length === 0) {
-        document.getElementById("chart").innerHTML = '<div class="loading">No MD edits found for target files.</div>';
+        document.getElementById("chart").innerHTML = '<div class="loading">No MD edits found.</div>';
         return;
       }
       timeDomain = [allEdits[0].time, allEdits[allEdits.length - 1].time];
+      buildFileFilter();
       render();
     }
 
@@ -162,19 +210,28 @@
       chartEl.innerHTML = "";
       const width = Math.max(800, chartEl.clientWidth || 800);
       const height = 500;
-      const margin = { top: 20, right: 20, bottom: 60, left: 110 };
+      const maxFileLen = Math.max(...[...selectedFiles].map(f => f.length), 10);
+      const margin = { top: 20, right: 20, bottom: 60, left: Math.min(180, 60 + maxFileLen * 5) };
       const innerWidth = width - margin.left - margin.right;
       const innerHeight = height - margin.top - margin.bottom;
       const brushHeight = 36;
 
       const [start, end] = timeDomain;
-      const filtered = allEdits.filter(e => e.time >= start && e.time <= end);
+      const bySelection = allEdits.filter(e => selectedFiles.has(e.category));
+      const filtered = bySelection.filter(e => e.time >= start && e.time <= end);
+
+      if (selectedFiles.size === 0 || filtered.length === 0) {
+        chartEl.innerHTML = '<div class="loading">Select one or more files above to view edits.</div>';
+        document.getElementById("range-label").textContent = "";
+        return;
+      }
+
       const extent = d3.extent(filtered, d => d.bytes) || [0, 1000];
       const sizeScale = d3.scaleSqrt().domain(extent).range([DOT_SIZE_MIN, DOT_SIZE_MAX]);
       const xScale = d3.scaleTime().domain([start, end]).range([0, innerWidth]);
       const withSubRows = assignSubRows(filtered, xScale, sizeScale);
 
-      const lanes = TARGET_FILES.flatMap(f => Array.from({ length: ROWS_PER_FILE }, (_, i) => `${f}::${i}`));
+      const lanes = [...selectedFiles].sort().flatMap(f => Array.from({ length: ROWS_PER_FILE }, (_, i) => `${f}::${i}`));
 
       const svg = d3.select(chartEl)
         .append("svg")
@@ -201,7 +258,7 @@
         .attr("cx", d => xScale(d.time))
         .attr("cy", d => yScale(d.laneId) + yScale.bandwidth() / 2)
         .attr("r", d => sizeScale(d.bytes))
-        .attr("fill", d => FILE_COLORS[d.category] ?? "#6b7a8f")
+        .attr("fill", d => fileColor(d.category))
         .attr("fill-opacity", 0.85)
         .attr("stroke", "#0d0f14")
         .attr("stroke-width", 1)
@@ -213,8 +270,6 @@
       const modalTitle = document.getElementById("modal-title");
 
       function openModal(d) {
-        clearTimeout(hoverTimer);
-        hoverTimer = null;
         tooltip.style.visibility = "hidden";
         const prior = (d.sessionId ? allEvents.filter(e =>
           e.sessionId === d.sessionId && e.time < d.time
@@ -249,23 +304,19 @@
             <div class="file">${d.category}</div>
             <div class="time">${d3.timeFormat("%b %d %H:%M:%S")(d.time)}</div>
             <div class="summary">${(d.modSummary || d.summary || d.message || "").slice(0, 300)}${(d.modSummary || d.summary || d.message || "").length > 300 ? "…" : ""}</div>
-            <div class="bytes">${d.bytes} bytes — click or hold to view full</div>
+            <div class="bytes">${d.bytes} bytes — click to view full</div>
           `;
           tooltip.style.visibility = "visible";
-          hoverTimer = setTimeout(() => openModal(d), LONG_HOVER_MS);
         })
         .on("mousemove", (ev) => {
           tooltip.style.top = (ev.pageY + 12) + "px";
           tooltip.style.left = Math.min(ev.pageX + 12, window.innerWidth - 420) + "px";
         })
-        .on("mouseleave", () => {
-          tooltip.style.visibility = "hidden";
-          if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
-        })
+        .on("mouseleave", () => { tooltip.style.visibility = "hidden"; })
         .on("click", (ev, d) => { ev.stopPropagation(); openModal(d); });
 
       // Brush for time window (flag prevents recursion: brush.move fires "end")
-      const fullExtent = [allEdits[0].time, allEdits[allEdits.length - 1].time];
+      const fullExtent = bySelection.length ? [bySelection[0].time, bySelection[bySelection.length - 1].time] : timeDomain;
       const brushXScale = d3.scaleTime().domain(fullExtent).range([0, innerWidth]);
       let skipBrushEnd = false;
       const brush = d3.brushX().extent([[0, 0], [innerWidth, brushHeight]]).on("end", (ev) => {
