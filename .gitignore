@@ -1,0 +1,14 @@
+.env
+.DS_Store
+node_modules/
+dist/
+dist-public/
+public/events.json
+public/events-slim.json
+public/models/
+public/onnx-wasm/
+logs/*.log
+logs/*.jsonl
+logs/**/*.jsonl
+*.log
+summarize-mods.log

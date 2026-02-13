@@ -1,0 +1,81 @@
+# OpenClaw Log Viz
+
+Visualize OpenClaw/moltbot logs: MD file edits, event timeline, and semantic search.
+
+## Quick Start (from logs folder only)
+
+```bash
+# 1. Clone and install
+git clone git@github.com:wendlerc/oplenclaw-log-viz.git
+cd oplenclaw-log-viz
+npm install
+
+# 2. Put your logs in ./logs/
+#    - JSONL files from sessions_snap/, cron_snap/, or .log files
+#    - Or copy from OpenClaw: npm run copy-logs
+#    - Or generate samples: npm run sample
+
+# 3. Parse, summarize, slim
+npm run parse
+npm run summarize:mods   # requires OPENROUTER_API_KEY
+npm run slim
+
+# 4. Run
+npm run dev
+# Open http://localhost:5173/md-edits-view.html
+```
+
+## Pipeline Overview
+
+| Step | Command | Output | Notes |
+|------|---------|--------|------|
+| Parse | `npm run parse` | `public/events.json` | Extracts events from logs. **Writes only** (no reads). |
+| Summarize mods | `npm run summarize:mods` | Adds `modSummary` to events | OpenRouter (qwen). Saves every 50. |
+| Slim | `npm run slim` | `public/events-slim.json` | Strips embeddings, truncates messages. Fast load. |
+
+One-liner after parse: `npm run mods-then-slim`
+
+## MD Edits View
+
+**http://localhost:5173/md-edits-view.html**
+
+- **X-axis:** Time (brush to zoom)
+- **Y-axis:** SOUL.md, AGENTS.md, IDENTITY.md, USER.md, MEMORY.md, HEARTBEAT.md
+- **Dots:** Size = bytes written. Color per file. 10 sub-rows to reduce overlap.
+- **Hover:** Shows `modSummary` (or `summary`)
+
+## What Was Done
+
+### Parser changes (writes only)
+- **Removed** "MD file mentions in assistant text" — that included reads (e.g. "From SOUL.md: ...").
+- **Added** `md_write` only from:
+  - Tool calls `write` / `edit` with `path` to an MD file
+  - Tool results `write` / `edit` with "Successfully wrote X bytes to ..."
+- Plain logs: only when message contains "wrote", "updated", "edited", or byte count.
+
+### Modification summaries
+- `summarize:mods` uses `qwen/qwen3-vl-32b-instruct` to parse boilerplate (tool JSON, chat templates) and produce one-sentence summaries.
+- Requires `OPENROUTER_API_KEY` in `.env` or env.
+
+### Slim file
+- `events-slim.json` strips embeddings and truncates messages for fast dashboard load (~17MB vs ~486MB full).
+
+## Other Views
+
+- **Main dashboard:** http://localhost:5173 — bar charts, timeline, semantic search
+- **Semantic search** (optional): `npm run download-model` then `npm run embed`
+
+## Log Format
+
+Expects JSONL with `type: "message"`, `message.role`, `message.content` (toolCall, toolResult, text, thinking). Also plain `.log` with `time`, `level`, `message`.
+
+## Scripts
+
+| Script | Description |
+|--------|-------------|
+| `parse` | Parse logs → events.json |
+| `summarize:mods` | Add modSummary (OpenRouter) |
+| `slim` | Generate events-slim.json |
+| `mods-then-slim` | summarize:mods && slim |
+| `copy-logs` | Copy from ~/.openclaw, /tmp/openclaw |
+| `sample` | Generate demo logs |

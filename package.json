@@ -1,0 +1,39 @@
+{
+  "name": "bot-log-analysis",
+  "version": "1.0.0",
+  "description": "Analyze moltbot/openclaw logs and visualize MD file writes, tool calls, and event timeline",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "dev": "concurrently -n v,a -c blue,yellow \"vite\" \"node scripts/embed-api.js\"",
+    "dev:vite": "vite",
+    "embed-api": "node scripts/embed-api.js",
+    "parse": "node scripts/parse-logs.js",
+    "embed": "node scripts/embed-events.js",
+    "summarize": "TEST_FIRST=1 node scripts/summarize-events.js",
+    "summarize:full": "node scripts/summarize-events.js",
+    "download-model": "node scripts/download-model.js",
+    "copy-logs": "node scripts/copy-logs.js",
+    "sample": "node scripts/generate-sample-logs.js",
+    "preview": "vite preview",
+    "test:embed": "node scripts/test-embed-local.js",
+    "test:fetch": "node scripts/test-fetch-model-urls.js",
+    "test:embed-browser": "node scripts/test-embed-browser.mjs",
+    "test:all": "npm run test:embed && npm run test:fetch",
+    "slim": "node scripts/slim-events.js",
+    "summarize:mods": "node scripts/summarize-modifications.js",
+    "mods-then-slim": "bash scripts/mods-then-slim.sh"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "d3": "^7.8.5",
+    "dotenv": "^17.2.4"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "concurrently": "^9.2.1",
+    "playwright": "^1.58.2",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0"
+  }
+}
